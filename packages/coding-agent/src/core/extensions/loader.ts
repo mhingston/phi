@@ -141,7 +141,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		pendingProviderRegistrations: [],
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
-		registerProvider: (name, config) => {
+		registerProvider: async (name, config) => {
 			runtime.pendingProviderRegistrations.push({ name, config });
 		},
 		unregisterProvider: (name) => {
@@ -271,7 +271,7 @@ function createExtensionAPI(
 		},
 
 		registerProvider(name: string, config: ProviderConfig) {
-			runtime.registerProvider(name, config);
+			return runtime.registerProvider(name, config);
 		},
 
 		unregisterProvider(name: string) {

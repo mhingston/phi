@@ -23,6 +23,15 @@ import AjvModule from "ajv";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir } from "../config.js";
+import {
+	AI_SDK_INLINE_AUTH_TOKEN,
+	type AiSdkModelConfig,
+	type AiSdkProviderConfig,
+	type AiSdkProviderFactoryOptions,
+	createAiSdkApiProvider,
+	discoverAiSdkModels,
+	resolveAiSdkProvider,
+} from "./ai-sdk-provider.js";
 import type { AuthStorage } from "./auth-storage.js";
 import { clearConfigValueCache, resolveConfigValue, resolveHeaders } from "./resolve-config-value.js";
 
@@ -223,6 +232,7 @@ export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private customProviderApiKeys: Map<string, string> = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
+	private inlineAuthProviders: Set<string> = new Set();
 	private loadError: string | undefined = undefined;
 
 	constructor(
@@ -247,6 +257,7 @@ export class ModelRegistry {
 	 */
 	refresh(): void {
 		this.customProviderApiKeys.clear();
+		this.inlineAuthProviders.clear();
 		this.loadError = undefined;
 
 		// Ensure dynamic API/OAuth registrations are rebuilt from current provider state.
@@ -300,7 +311,7 @@ export class ModelRegistry {
 		overrides: Map<string, ProviderOverride>,
 		modelOverrides: Map<string, Map<string, ModelOverride>>,
 	): Model<Api>[] {
-		return getProviders().flatMap((provider) => {
+		return getProviders().flatMap((provider: string) => {
 			const models = getModels(provider as KnownProvider) as Model<Api>[];
 			const providerOverride = overrides.get(provider);
 			const perModelOverrides = modelOverrides.get(provider);
@@ -492,6 +503,127 @@ export class ModelRegistry {
 		return models;
 	}
 
+	private resolveAiSdkFactoryOptions(config: ProviderConfigInput, apiKey?: string): AiSdkProviderFactoryOptions {
+		return {
+			apiKey: apiKey && apiKey !== AI_SDK_INLINE_AUTH_TOKEN ? apiKey : undefined,
+			baseUrl: config.baseUrl,
+			headers: resolveHeaders(config.headers),
+		};
+	}
+
+	private getCatalogModel(
+		providerName: string,
+		modelId: string,
+		sourceProvider?: string,
+		sourceModelId?: string,
+	): Model<Api> | undefined {
+		const direct = this.models.find((model) => model.provider === providerName && model.id === modelId);
+		if (direct) return direct;
+
+		if (sourceProvider && sourceModelId) {
+			const sourceMatch = this.models.find(
+				(model) => model.provider === sourceProvider && model.id === sourceModelId,
+			);
+			if (sourceMatch) return sourceMatch;
+		}
+
+		return this.models.find((model) => model.id === modelId);
+	}
+
+	private buildAiSdkModel(
+		providerName: string,
+		api: Api,
+		config: ProviderConfigInput,
+		modelConfig: AiSdkModelConfig,
+	): Model<Api> {
+		const sourceModel = this.getCatalogModel(
+			providerName,
+			modelConfig.id,
+			modelConfig.sourceProvider,
+			modelConfig.sourceModelId,
+		);
+		const providerHeaders = resolveHeaders(config.headers);
+		const modelHeaders = resolveHeaders(modelConfig.headers);
+		const defaultCost = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		};
+
+		return {
+			id: modelConfig.id,
+			name: modelConfig.name ?? sourceModel?.name ?? modelConfig.id,
+			api,
+			provider: providerName,
+			baseUrl: config.baseUrl ?? sourceModel?.baseUrl ?? "",
+			reasoning: modelConfig.reasoning ?? sourceModel?.reasoning ?? false,
+			input: modelConfig.input ?? sourceModel?.input ?? ["text"],
+			cost: {
+				input: modelConfig.cost?.input ?? sourceModel?.cost.input ?? defaultCost.input,
+				output: modelConfig.cost?.output ?? sourceModel?.cost.output ?? defaultCost.output,
+				cacheRead: modelConfig.cost?.cacheRead ?? sourceModel?.cost.cacheRead ?? defaultCost.cacheRead,
+				cacheWrite: modelConfig.cost?.cacheWrite ?? sourceModel?.cost.cacheWrite ?? defaultCost.cacheWrite,
+			},
+			contextWindow: modelConfig.contextWindow ?? sourceModel?.contextWindow ?? 128000,
+			maxTokens: modelConfig.maxTokens ?? sourceModel?.maxTokens ?? 16384,
+			headers:
+				providerHeaders || modelHeaders || sourceModel?.headers
+					? { ...sourceModel?.headers, ...providerHeaders, ...modelHeaders }
+					: undefined,
+			compat: modelConfig.compat ?? sourceModel?.compat,
+		};
+	}
+
+	private async buildAiSdkModels(providerName: string, api: Api, config: ProviderConfigInput): Promise<Model<Api>[]> {
+		const sdkConfig = config.sdk;
+		if (!sdkConfig) return [];
+
+		let modelConfigs: AiSdkModelConfig[] = [];
+		if (sdkConfig.models && sdkConfig.models.length > 0) {
+			const resolvedApiKey = config.apiKey ? resolveConfigValue(config.apiKey) : undefined;
+			const provider = resolveAiSdkProvider(sdkConfig, this.resolveAiSdkFactoryOptions(config, resolvedApiKey));
+			modelConfigs = sdkConfig.models.map((entry) => {
+				if (typeof entry !== "string") return entry;
+				try {
+					const languageModel = provider.languageModel(entry) as import("@ai-sdk/provider").LanguageModelV2;
+					return {
+						id: entry,
+						name: entry,
+						sourceProvider: languageModel.provider,
+						sourceModelId: languageModel.modelId,
+					};
+				} catch {
+					return { id: entry, name: entry };
+				}
+			});
+		} else if (sdkConfig.discoverModels !== false) {
+			const resolvedApiKey = config.apiKey ? resolveConfigValue(config.apiKey) : undefined;
+			modelConfigs = await discoverAiSdkModels(sdkConfig, this.resolveAiSdkFactoryOptions(config, resolvedApiKey));
+		}
+
+		if (modelConfigs.length === 0) {
+			const existingProviderModels = this.models.filter((model) => model.provider === providerName);
+			if (existingProviderModels.length > 0) {
+				modelConfigs = existingProviderModels.map((model) => ({
+					id: model.id,
+					name: model.name,
+					reasoning: model.reasoning,
+					input: model.input,
+					cost: model.cost,
+					contextWindow: model.contextWindow,
+					maxTokens: model.maxTokens,
+					headers: model.headers,
+					compat: model.compat as Model<Api>["compat"] & AiSdkModelConfig["compat"],
+					sourceProvider: model.provider,
+					sourceModelId: model.id,
+				}));
+			}
+		}
+
+		return modelConfigs.map((modelConfig) => this.buildAiSdkModel(providerName, api, config, modelConfig));
+	}
+
 	/**
 	 * Get all models (built-in + custom).
 	 * If models.json had errors, returns only built-in models.
@@ -500,12 +632,16 @@ export class ModelRegistry {
 		return this.models;
 	}
 
+	hasConfiguredAuthForProvider(provider: string): boolean {
+		return this.inlineAuthProviders.has(provider) || this.authStorage.hasAuth(provider);
+	}
+
 	/**
 	 * Get only models that have auth configured.
 	 * This is a fast check that doesn't refresh OAuth tokens.
 	 */
 	getAvailable(): Model<Api>[] {
-		return this.models.filter((m) => this.authStorage.hasAuth(m.provider));
+		return this.models.filter((m) => this.hasConfiguredAuthForProvider(m.provider));
 	}
 
 	/**
@@ -519,6 +655,9 @@ export class ModelRegistry {
 	 * Get API key for a model.
 	 */
 	async getApiKey(model: Model<Api>): Promise<string | undefined> {
+		if (this.inlineAuthProviders.has(model.provider)) {
+			return AI_SDK_INLINE_AUTH_TOKEN;
+		}
 		return this.authStorage.getApiKey(model.provider);
 	}
 
@@ -526,6 +665,9 @@ export class ModelRegistry {
 	 * Get API key for a provider.
 	 */
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
+		if (this.inlineAuthProviders.has(provider)) {
+			return AI_SDK_INLINE_AUTH_TOKEN;
+		}
 		return this.authStorage.getApiKey(provider);
 	}
 
@@ -544,9 +686,9 @@ export class ModelRegistry {
 	 * If provider has only baseUrl/headers: overrides existing models' URLs.
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
-	registerProvider(providerName: string, config: ProviderConfigInput): void {
+	registerProvider(providerName: string, config: ProviderConfigInput): Promise<void> {
 		this.registeredProviders.set(providerName, config);
-		this.applyProviderConfig(providerName, config);
+		return this.applyProviderConfig(providerName, config);
 	}
 
 	/**
@@ -565,7 +707,7 @@ export class ModelRegistry {
 		this.refresh();
 	}
 
-	private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
+	private async applyProviderConfig(providerName: string, config: ProviderConfigInput): Promise<void> {
 		// Register OAuth provider if provided
 		if (config.oauth) {
 			// Ensure the OAuth provider ID matches the provider name
@@ -584,11 +726,63 @@ export class ModelRegistry {
 			registerApiProvider(
 				{
 					api: config.api,
-					stream: (model, context, options) => streamSimple(model, context, options as SimpleStreamOptions),
+					stream: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+						streamSimple(model, context, options as SimpleStreamOptions),
 					streamSimple,
 				},
 				`provider:${providerName}`,
 			);
+		}
+
+		if (config.sdk) {
+			const api = `ai-sdk:${providerName}` as Api;
+			registerApiProvider(
+				{
+					api,
+					...createAiSdkApiProvider({
+						resolveProvider: (providerOptions) =>
+							resolveAiSdkProvider(config.sdk!, {
+								...this.resolveAiSdkFactoryOptions(config, providerOptions.apiKey),
+								baseUrl: providerOptions.baseUrl ?? config.baseUrl,
+								headers: resolveHeaders(config.headers)
+									? { ...resolveHeaders(config.headers), ...providerOptions.headers }
+									: providerOptions.headers,
+							}),
+						providerOptions: config.sdk.providerOptions,
+					}),
+				},
+				`provider:${providerName}`,
+			);
+
+			if (!config.apiKey && !config.oauth) {
+				this.inlineAuthProviders.add(providerName);
+			}
+
+			const explicitSdkModels = config.models?.length
+				? config.models.map((modelDef) => ({
+						id: modelDef.id,
+						name: modelDef.name,
+						reasoning: modelDef.reasoning,
+						input: modelDef.input,
+						cost: modelDef.cost,
+						contextWindow: modelDef.contextWindow,
+						maxTokens: modelDef.maxTokens,
+						headers: modelDef.headers,
+						compat: modelDef.compat as AiSdkModelConfig["compat"],
+					}))
+				: undefined;
+			const resolvedSdkModels: Model<Api>[] = explicitSdkModels
+				? explicitSdkModels.map((model) => this.buildAiSdkModel(providerName, api, config, model))
+				: await this.buildAiSdkModels(providerName, api, config);
+
+			this.models = this.models.filter((model) => model.provider !== providerName);
+			if (resolvedSdkModels.length === 0) {
+				throw new Error(
+					`Provider ${providerName}: could not infer models from the AI SDK provider. Add sdk.models or register the provider under an existing built-in provider name.`,
+				);
+			}
+			this.models.push(...resolvedSdkModels);
+			return;
 		}
 
 		// Store API key for auth resolution
@@ -672,6 +866,7 @@ export class ModelRegistry {
 export interface ProviderConfigInput {
 	baseUrl?: string;
 	apiKey?: string;
+	sdk?: AiSdkProviderConfig;
 	api?: Api;
 	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;

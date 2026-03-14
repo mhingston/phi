@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Message, Model } from "@mariozechner/pi-ai";
+import type { Api, Message, Model } from "@mariozechner/pi-ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
@@ -182,6 +182,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		time("resourceLoader.reload");
 	}
 
+	const preloadedExtensions = resourceLoader.getExtensions();
+	for (const { name, config } of preloadedExtensions.runtime.pendingProviderRegistrations) {
+		await modelRegistry.registerProvider(name, config);
+	}
+	preloadedExtensions.runtime.pendingProviderRegistrations = [];
+
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
 	const hasExistingSession = existingSession.messages.length > 0;
@@ -292,7 +298,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			tools: [],
 		},
 		convertToLlm: convertToLlmWithBlockImages,
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload: unknown, _model: Model<Api>) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
 				return payload;
@@ -300,7 +306,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return runner.emitBeforeProviderRequest(payload);
 		},
 		sessionId: sessionManager.getSessionId(),
-		transformContext: async (messages) => {
+		transformContext: async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
 			const runner = extensionRunnerRef.current;
 			if (!runner) return messages;
 			return runner.emitContext(messages);
@@ -310,7 +316,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		transport: settingsManager.getTransport(),
 		thinkingBudgets: settingsManager.getThinkingBudgets(),
 		maxRetryDelayMs: settingsManager.getRetrySettings().maxDelayMs,
-		getApiKey: async (provider) => {
+		getApiKey: async (provider?: string) => {
 			// Use the provider argument from the in-flight request;
 			// agent.state.model may already be switched mid-turn.
 			const resolvedProvider = provider || agent.state.model?.provider;

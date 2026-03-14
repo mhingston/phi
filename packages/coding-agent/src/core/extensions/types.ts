@@ -39,6 +39,7 @@ import type {
 } from "@mariozechner/pi-tui";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
+import type { AiSdkProviderConfig } from "../ai-sdk-provider.js";
 import type { BashResult } from "../bash-executor.js";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.js";
 import type { EventBus } from "../event-bus.js";
@@ -1154,7 +1155,7 @@ export interface ExtensionAPI {
 	 *   }
 	 * });
 	 */
-	registerProvider(name: string, config: ProviderConfig): void;
+	registerProvider(name: string, config: ProviderConfig): Promise<void>;
 
 	/**
 	 * Unregister a previously registered provider.
@@ -1185,6 +1186,8 @@ export interface ProviderConfig {
 	baseUrl?: string;
 	/** API key or environment variable name. Required when defining models (unless oauth provided). */
 	apiKey?: string;
+	/** Vercel AI SDK provider configuration. */
+	sdk?: AiSdkProviderConfig;
 	/** API type. Required at provider or model level when defining models. */
 	api?: Api;
 	/** Optional streamSimple handler for custom APIs. */
@@ -1314,7 +1317,7 @@ export interface ExtensionRuntimeState {
 	 * Before bindCore(): queues registrations / removes from queue.
 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
 	 */
-	registerProvider: (name: string, config: ProviderConfig) => void;
+	registerProvider: (name: string, config: ProviderConfig) => Promise<void>;
 	unregisterProvider: (name: string) => void;
 }
 

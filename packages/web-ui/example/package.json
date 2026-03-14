@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@mariozechner/mini-lit": "^0.2.0",
+    "@mariozechner/pi-agent-core": "file:../../agent",
     "@mariozechner/pi-ai": "file:../../ai",
     "@mariozechner/pi-web-ui": "file:../",
     "@tailwindcss/vite": "^4.1.17",

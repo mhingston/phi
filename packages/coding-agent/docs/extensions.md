@@ -1212,35 +1212,51 @@ Register or override a model provider dynamically. Useful for proxies, custom en
 
 Calls made during the extension factory function are queued and applied once the runner initialises. Calls made after that — for example from a command handler following a user setup flow — take effect immediately without requiring a `/reload`.
 
+`registerProvider()` now returns a `Promise<void>`. You usually do not need to await it during initial extension setup, but you should `await` it when registering a provider in response to a command or event and you want to use it immediately afterward.
+
 ```typescript
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
+
 // Register a new provider with custom models
-pi.registerProvider("my-proxy", {
-  baseUrl: "https://proxy.example.com",
+void pi.registerProvider("my-proxy", {
   apiKey: "PROXY_API_KEY",  // env var name or literal
-  api: "anthropic-messages",
-  models: [
-    {
-      id: "claude-sonnet-4-20250514",
-      name: "Claude 4 Sonnet (proxy)",
-      reasoning: false,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
-      maxTokens: 16384
-    }
-  ]
+  baseUrl: "https://proxy.example.com",
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createOpenAI({ apiKey, baseURL: baseUrl, headers }),
+    models: [
+      {
+        id: "claude-sonnet-4-20250514",
+        name: "Claude 4 Sonnet (proxy)",
+        reasoning: false,
+        input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200000,
+        maxTokens: 16384
+      }
+    ]
+  }
 });
 
 // Override baseUrl for an existing provider (keeps all models)
-pi.registerProvider("anthropic", {
-  baseUrl: "https://proxy.example.com"
+void pi.registerProvider("anthropic", {
+  apiKey: "ANTHROPIC_API_KEY",
+  baseUrl: "https://proxy.example.com",
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createAnthropic({ apiKey, baseURL: baseUrl, headers })
+  }
 });
 
 // Register provider with OAuth support for /login
-pi.registerProvider("corporate-ai", {
+await pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com",
-  api: "openai-responses",
-  models: [...],
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createOpenAI({ apiKey, baseURL: baseUrl, headers }),
+    models: [...]
+  },
   oauth: {
     name: "Corporate AI (SSO)",
     async login(callbacks) {
@@ -1263,6 +1279,7 @@ pi.registerProvider("corporate-ai", {
 **Config options:**
 - `baseUrl` - API endpoint URL. Required when defining models.
 - `apiKey` - API key or environment variable name. Required when defining models (unless `oauth` provided).
+- `sdk` - Vercel AI SDK provider configuration. Preferred for providers that already have an AI SDK provider package.
 - `api` - API type: `"anthropic-messages"`, `"openai-completions"`, `"openai-responses"`, etc.
 - `headers` - Custom headers to include in requests.
 - `authHeader` - If true, adds `Authorization: Bearer` header automatically.
@@ -1270,7 +1287,9 @@ pi.registerProvider("corporate-ai", {
 - `oauth` - OAuth provider config for `/login` support. When provided, the provider appears in the login menu.
 - `streamSimple` - Custom streaming implementation for non-standard APIs.
 
-See [custom-provider.md](custom-provider.md) for advanced topics: custom streaming APIs, OAuth details, model definition reference.
+With `sdk`, pi keeps known built-in model catalogs when you override an existing provider name, can discover models when the provider supports it, and otherwise accepts explicit `sdk.models`.
+
+See [custom-provider.md](custom-provider.md) for advanced topics: AI SDK config, custom streaming APIs, OAuth details, and model definition reference.
 
 ### pi.unregisterProvider(name)
 

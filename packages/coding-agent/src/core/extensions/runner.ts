@@ -264,7 +264,7 @@ export class ExtensionRunner {
 
 		// Flush provider registrations queued during extension loading
 		for (const { name, config } of this.runtime.pendingProviderRegistrations) {
-			this.modelRegistry.registerProvider(name, config);
+			void this.modelRegistry.registerProvider(name, config);
 		}
 		this.runtime.pendingProviderRegistrations = [];
 

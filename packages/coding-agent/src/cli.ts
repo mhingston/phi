@@ -8,11 +8,11 @@
 process.title = "pi";
 
 import { setBedrockProviderModule } from "@mariozechner/pi-ai";
-import { bedrockProviderModule } from "@mariozechner/pi-ai/bedrock-provider";
+import * as bedrockProviderModule from "@mariozechner/pi-ai/bedrock-provider";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { main } from "./main.js";
 
 setGlobalDispatcher(new EnvHttpProxyAgent());
-setBedrockProviderModule(bedrockProviderModule);
+setBedrockProviderModule(bedrockProviderModule as Parameters<typeof setBedrockProviderModule>[0]);
 
 main(process.argv.slice(2));

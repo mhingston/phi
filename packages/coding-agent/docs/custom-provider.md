@@ -5,7 +5,10 @@ Extensions can register custom model providers via `pi.registerProvider()`. This
 - **Proxies** - Route requests through corporate proxies or API gateways
 - **Custom endpoints** - Use self-hosted or private model deployments
 - **OAuth/SSO** - Add authentication flows for enterprise providers
-- **Custom APIs** - Implement streaming for non-standard LLM APIs
+- **AI SDK providers** - Bring your own Vercel AI SDK provider and let pi infer the transport
+- **Custom APIs** - Implement streaming for non-standard LLM APIs when AI SDK is not enough
+
+The preferred path is now `sdk`. If your provider already has an AI SDK provider package, pi can use it directly and handle streaming automatically. You only need the legacy `api` and `streamSimple` fields for providers with no suitable AI SDK integration or for heavily custom protocols.
 
 ## Example Extensions
 
@@ -19,6 +22,7 @@ See these complete provider examples:
 
 - [Example Extensions](#example-extensions)
 - [Quick Reference](#quick-reference)
+- [AI SDK Providers](#ai-sdk-providers)
 - [Override Existing Provider](#override-existing-provider)
 - [Register New Provider](#register-new-provider)
 - [Unregister Provider](#unregister-provider)
@@ -32,90 +36,175 @@ See these complete provider examples:
 
 ```typescript
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { createOpenAI } from "@ai-sdk/openai";
 
 export default function (pi: ExtensionAPI) {
-  // Override baseUrl for existing provider
-  pi.registerProvider("anthropic", {
-    baseUrl: "https://proxy.example.com"
+  // Override an existing provider with an AI SDK provider factory.
+  // pi still resolves apiKey/baseUrl/headers for you.
+  void pi.registerProvider("openai", {
+    apiKey: "OPENAI_API_KEY",
+    sdk: {
+      provider: ({ apiKey, baseUrl, headers }) =>
+        createOpenAI({ apiKey, baseURL: baseUrl, headers })
+    }
   });
 
-  // Register new provider with models
-  pi.registerProvider("my-provider", {
-    baseUrl: "https://api.example.com",
+  // Register a brand-new provider backed by AI SDK
+  void pi.registerProvider("my-provider", {
     apiKey: "MY_API_KEY",
-    api: "openai-completions",
-    models: [
-      {
-        id: "my-model",
-        name: "My Model",
-        reasoning: false,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128000,
-        maxTokens: 4096
-      }
-    ]
+    sdk: {
+      provider: ({ apiKey, baseUrl, headers }) =>
+        createOpenAI({ apiKey, baseURL: baseUrl, headers }),
+      models: [
+        {
+          id: "my-model",
+          name: "My Model",
+          reasoning: false,
+          input: ["text", "image"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 4096
+        }
+      ]
+    }
   });
 }
 ```
+
+## AI SDK Providers
+
+Bring your own AI SDK provider package in the extension’s `package.json`, for example `@ai-sdk/openai`, `@ai-sdk/anthropic`, or another provider package that returns an AI SDK `Provider`.
+
+```typescript
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { createAnthropic } from "@ai-sdk/anthropic";
+
+export default function (pi: ExtensionAPI) {
+  void pi.registerProvider("anthropic", {
+    apiKey: "ANTHROPIC_API_KEY",
+    baseUrl: "ANTHROPIC_BASE_URL",
+    headers: {
+      "X-Proxy-Token": "CORP_PROXY_TOKEN"
+    },
+    sdk: {
+      provider: ({ apiKey, baseUrl, headers }) =>
+        createAnthropic({
+          apiKey,
+          baseURL: baseUrl,
+          headers
+        })
+    }
+  });
+}
+```
+
+How model inference works:
+
+- If you override an existing pi provider name such as `openai` or `anthropic` and do not provide `sdk.models`, pi keeps that provider’s built-in model catalog.
+- If the AI SDK provider exposes model discovery, pi can fetch models dynamically with `sdk.discoverModels: true`.
+- Otherwise, provide `sdk.models` explicitly.
+
+For providers that manage auth internally, you can also pass a fully constructed AI SDK provider instance instead of a factory:
+
+```typescript
+import { createOpenAI } from "@ai-sdk/openai";
+
+export default function (pi: ExtensionAPI) {
+  const provider = createOpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
+  void pi.registerProvider("openai", {
+    sdk: { provider }
+  });
+}
+```
+
+That works, but pi can no longer resolve credentials or endpoint settings for you. Using a factory is the better default.
 
 ## Override Existing Provider
 
 The simplest use case: redirect an existing provider through a proxy.
 
 ```typescript
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+
 // All Anthropic requests now go through your proxy
-pi.registerProvider("anthropic", {
-  baseUrl: "https://proxy.example.com"
+void pi.registerProvider("anthropic", {
+  apiKey: "ANTHROPIC_API_KEY",
+  baseUrl: "https://proxy.example.com",
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createAnthropic({ apiKey, baseURL: baseUrl, headers })
+  }
 });
 
 // Add custom headers to OpenAI requests
-pi.registerProvider("openai", {
+void pi.registerProvider("openai", {
+  apiKey: "OPENAI_API_KEY",
   headers: {
     "X-Custom-Header": "value"
-  }
-});
-
-// Both baseUrl and headers
-pi.registerProvider("google", {
-  baseUrl: "https://ai-gateway.corp.com/google",
-  headers: {
-    "X-Corp-Auth": "CORP_AUTH_TOKEN"  // env var or literal
+  },
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createOpenAI({ apiKey, baseURL: baseUrl, headers })
   }
 });
 ```
 
-When only `baseUrl` and/or `headers` are provided (no `models`), all existing models for that provider are preserved with the new endpoint.
+When you override a known provider and omit `sdk.models`, pi preserves the existing model catalog and swaps in your AI SDK provider transport.
 
 ## Register New Provider
 
-To add a completely new provider, specify `models` along with the required configuration.
+To add a completely new provider, either specify `sdk.models`, or enable discovery if the provider supports it.
 
 ```typescript
-pi.registerProvider("my-llm", {
+import { createOpenAI } from "@ai-sdk/openai";
+
+void pi.registerProvider("my-llm", {
+  apiKey: "MY_LLM_API_KEY",
   baseUrl: "https://api.my-llm.com/v1",
-  apiKey: "MY_LLM_API_KEY",  // env var name or literal value
-  api: "openai-completions",  // which streaming API to use
-  models: [
-    {
-      id: "my-llm-large",
-      name: "My LLM Large",
-      reasoning: true,        // supports extended thinking
-      input: ["text", "image"],
-      cost: {
-        input: 3.0,           // $/million tokens
-        output: 15.0,
-        cacheRead: 0.3,
-        cacheWrite: 3.75
-      },
-      contextWindow: 200000,
-      maxTokens: 16384
-    }
-  ]
+  sdk: {
+    provider: ({ apiKey, baseUrl, headers }) =>
+      createOpenAI({ apiKey, baseURL: baseUrl, headers }),
+    models: [
+      {
+        id: "my-llm-large",
+        name: "My LLM Large",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: {
+          input: 3.0,
+          output: 15.0,
+          cacheRead: 0.3,
+          cacheWrite: 3.75
+        },
+        contextWindow: 200000,
+        maxTokens: 16384
+      }
+    ]
+  }
 });
 ```
 
-When `models` is provided, it **replaces** all existing models for that provider.
+When `sdk.models` is provided, it **replaces** all existing models for that provider.
+
+### Discovery-capable providers
+
+Some AI SDK providers can list models. For those, enable discovery:
+
+```typescript
+import { createGateway } from "@ai-sdk/gateway";
+
+void pi.registerProvider("vercel-ai-gateway", {
+  apiKey: "AI_GATEWAY_API_KEY",
+  sdk: {
+    provider: ({ apiKey }) => createGateway({ apiKey }),
+    discoverModels: true
+  }
+});
+```
+
+Today this is provider-specific, not universal. If discovery is not available, provide `sdk.models`.
 
 ## Unregister Provider
 
@@ -123,7 +212,7 @@ Use `pi.unregisterProvider(name)` to remove a provider that was previously regis
 
 ```typescript
 // Register
-pi.registerProvider("my-llm", {
+void pi.registerProvider("my-llm", {
   baseUrl: "https://api.my-llm.com/v1",
   apiKey: "MY_LLM_API_KEY",
   api: "openai-completions",
@@ -301,7 +390,7 @@ interface OAuthCredentials {
 
 ## Custom Streaming API
 
-For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
+For providers with non-standard APIs, implement `streamSimple`. This is the escape hatch when an AI SDK provider is not available or cannot express the behavior you need. Study the existing provider implementations before writing your own:
 
 **Reference implementations:**
 - [anthropic.ts](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/anthropic.ts) - Anthropic Messages API
@@ -509,6 +598,18 @@ interface ProviderConfig {
   /** API key or environment variable name. Required when defining models (unless oauth). */
   apiKey?: string;
 
+  /** AI SDK provider config. Preferred over low-level api/streamSimple. */
+  sdk?: {
+    provider: Provider | ((options: {
+      apiKey?: string;
+      baseUrl?: string;
+      headers?: Record<string, string>;
+    }) => Provider);
+    discoverModels?: boolean;
+    models?: Array<string | AiSdkModelConfig>;
+    providerOptions?: SharedV2ProviderOptions | ((context) => SharedV2ProviderOptions | Promise<SharedV2ProviderOptions>);
+  };
+
   /** API type for streaming. Required at provider or model level when defining models. */
   api?: Api;
 
@@ -590,3 +691,5 @@ interface ProviderModelConfig {
   };
 }
 ```
+
+When both `sdk` and legacy provider fields are present, `sdk` controls transport inference and model discovery. The legacy fields remain useful for auth, headers, OAuth, or as a fallback for models that still need explicit metadata.

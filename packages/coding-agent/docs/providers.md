@@ -176,7 +176,7 @@ Or set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file.
 
 **Via models.json:** Add Ollama, LM Studio, vLLM, or any provider that speaks a supported API (OpenAI Completions, OpenAI Responses, Anthropic Messages, Google Generative AI). See [models.md](models.md).
 
-**Via extensions:** For providers that need custom API implementations or OAuth flows, create an extension. See [custom-provider.md](custom-provider.md) and [examples/extensions/custom-provider-gitlab-duo](../examples/extensions/custom-provider-gitlab-duo/).
+**Via extensions:** For the best bring-your-own-provider flow, register a Vercel AI SDK provider via `sdk` in `pi.registerProvider()`. pi will use the provider directly, preserve built-in model catalogs when overriding known providers, and discover models when the provider exposes discovery. You can still fall back to custom `api`/`streamSimple` implementations for non-standard protocols. See [custom-provider.md](custom-provider.md) and [examples/extensions/custom-provider-gitlab-duo](../examples/extensions/custom-provider-gitlab-duo/).
 
 ## Resolution Order
 
